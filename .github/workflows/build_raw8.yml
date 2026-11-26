@@ -56,17 +56,62 @@ jobs:
             --depth=1
           repo sync -j$(nproc) --no-clone-bundle
 
-      - name: Apply RAW8 patch
+      - name: Apply RAW8 modifications
         working-directory: k230_src
         run: |
-          patch -p1 --forward < ../raw8_enable_v3.patch || {
-            echo "Patch failed - checking .rej files";
-            find . -name "*.rej" -exec cat {} \;
-            exit 1;
-          }
-          echo "RAW8 patch applied:"
-          grep -n "0x3034" mpp/kernel/sensor/src/ov5647/sensor_reg_table.c | head -1
-          grep -n "bit_width.*8" mpp/kernel/sensor/src/ov5647/sensor_csi0_mode_list.c | head -1
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # 1) 1080p OV5647 register table: RAW10 -> RAW8
+          p = Path('src/rtsmart/mpp/kernel/sensor/src/ov5647/sensor_reg_table.c')
+          s = p.read_text()
+          anchor = s.index('ov5647_mipi2lane_1080p_30fps_linear[] = {')
+          end = s.index('};', anchor)
+          block = s[anchor:end]
+          assert '{0x3034, 0x1a}' in block, '0x3034 RAW10 value not found in 1080p table'
+          block = block.replace('{0x3034, 0x1a}', '{0x3034, 0x08}', 1)
+          p.write_text(s[:anchor] + block + s[end:])
+
+          # 2) CSI0 1080p30 mode: bit_width 10->8, MIPI data type 0x2B->0x2A
+          p = Path('src/rtsmart/mpp/kernel/sensor/src/ov5647/sensor_csi0_mode_list.c')
+          s = p.read_text()
+          anchor = s.index('sensor_csi0_mode_list[] = {')
+          start = s.index('.index = 1,', anchor)
+          end = s.index('.index = 2,', start)
+          block = s[start:end]
+          assert '.bit_width = 10' in block, 'bit_width 10 not found in 1080p30 mode'
+          assert '.data_type = 0x2B' in block, 'data_type 0x2B not found in 1080p30 mode'
+          block = block.replace('.bit_width = 10', '.bit_width = 8', 1)
+          block = block.replace('.data_type = 0x2B', '.data_type = 0x2A', 1)
+          p.write_text(s[:start] + block + s[end:])
+
+          # 3) sensor.py: expose 8BPP bayer buffer calculation
+          p = Path('src/canmv/port/builtin_py/media/sensor.py')
+          s = p.read_text()
+          old_list = (
+              "elif pix_format in [PIXEL_FORMAT_RGB_BAYER_10BPP, PIXEL_FORMAT_RGB_BAYER_12BPP, \\\n"
+              "                            PIXEL_FORMAT_RGB_BAYER_14BPP, PIXEL_FORMAT_RGB_BAYER_16BPP]:"
+          )
+          new_list = (
+              "elif pix_format in [PIXEL_FORMAT_RGB_BAYER_8BPP, \\\n"
+              "                            PIXEL_FORMAT_RGB_BAYER_10BPP, PIXEL_FORMAT_RGB_BAYER_12BPP, \\\n"
+              "                            PIXEL_FORMAT_RGB_BAYER_14BPP, PIXEL_FORMAT_RGB_BAYER_16BPP]:"
+          )
+          assert old_list in s, 'sensor.py Bayer list not found'
+          s = s.replace(old_list, new_list, 1)
+          old_buf = "buf_size = ALIGN_UP((in_width * in_height * 2), VICAP_ALIGN_4K)"
+          new_buf = (
+              "buf_size = ALIGN_UP((in_width * in_height), VICAP_ALIGN_4K) "
+              "if pix_format == PIXEL_FORMAT_RGB_BAYER_8BPP "
+              "else ALIGN_UP((in_width * in_height * 2), VICAP_ALIGN_4K)"
+          )
+          assert old_buf in s, 'sensor.py buffer line not found'
+          s = s.replace(old_buf, new_buf, 1)
+          p.write_text(s)
+          PY
+          echo "RAW8 modification applied:"
+          grep -n "0x3034" src/rtsmart/mpp/kernel/sensor/src/ov5647/sensor_reg_table.c | head -3
+          grep -n "bit_width.*8" src/rtsmart/mpp/kernel/sensor/src/ov5647/sensor_csi0_mode_list.c | head -3
 
       - name: Download toolchain
         working-directory: k230_src
