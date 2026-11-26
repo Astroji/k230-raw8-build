@@ -13,12 +13,17 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
+      # 注意：不要把仓库 checkout 到 k230_src。
+      # repo init/sync 需要一个干净目录；若该目录已有 .git，会报
+      # "unsupported checkout state" 并导致 sync 失败。
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
-          path: k230_src
           fetch-depth: 1
           submodules: recursive
+
+      - name: Prepare SDK directory
+        run: mkdir -p k230_src
 
       - name: Install repo tool
         run: |
